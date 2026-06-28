@@ -1,113 +1,173 @@
 import os
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
+import json
+import logging
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+
+# 1. Loglarni sozlash (Xatoliklarni Render logs'da ko'rish uchun)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Baza fayli nomi
+DB_FILE = "users_db.json"
+ADMIN_ID = 7770204757  # ⚠️ DIQQAT: Bu yerga o'zingizning Telegram ID'angizni yozing!
+
+# Foydalanuvchini bazaga qo'shish funksiyasi
+def save_user(user_id, username):
+    if not os.path.exists(DB_FILE):
+        with open(DB_FILE, "w") as f:
+            json.dump({}, f)
+    
+    with open(DB_FILE, "r") as f:
+        data = json.load(f)
+    
+    if str(user_id) not in data:
+        data[str(user_id)] = {"username": username or "Mavjud emas"}
+        with open(DB_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+
+# Bazadagi barcha foydalanuvchilarni olish
+def get_all_users():
+    if not os.path.exists(DB_FILE):
+        return {}
+    with open(DB_FILE, "r") as f:
+        return json.load(f)
+
+# --- KLAVIATURALAR ---
+MAIN_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["🎮 Efootball Master", "ℹ️ Bot haqida"],
+        ["⚙️ Sozlamalar", "👤 Profil"]
+    ],
+    resize_keyboard=True
 )
 
-# 🤫 TOKEN'ni xavfsiz joyda saqlash tavsiya etiladi
-TOKEN = "8905601571:AAGr0PpNVZRT28UOuVA3bGzhiIH0rARI6BA"
-
-# Futbolchilar ma'lumotlar bazasi
-PLAYERS = {
-    "🇦🇷 Messi": {
-        "image": "images/messi.jpg",
-        "info": "🏆 Epic Lionel Messi\n\n⭐ Reyting: 106\n🎯 Pozitsiya: RWF\n🦶 Chap oyoq\n🇦🇷 Argentina",
-    },
-    "🇵🇹 Ronaldo": {
-        "image": "images/ronaldo.jpg",
-        "info": "🏆 Epic Cristiano Ronaldo\n\n⭐ Reyting: 106\n🎯 Pozitsiya: CF\n🦶 O'ng oyoq\n🇵🇹 Portugaliya",
-    },
-    "🇧🇷 Neymar": {
-        "image": "images/neymar.jpg",
-        "info": "🏆 Epic Neymar Jr\n\n⭐ Reyting: 105\n🎯 Pozitsiya: LWF\n🦶 O'ng oyoq\n🇧🇷 Braziliya",
-    },
-    "🇧🇷 Ronaldinho": {
-        "image": "images/ronaldinho.jpg",
-        "info": "🏆 Epic Ronaldinho\n\n⭐ Reyting: 106\n🎯 Pozitsiya: AMF\n🦶 O'ng oyoq\n🇧🇷 Braziliya",
-    },
-}
-
-# Asosiy menyu tugmalari
-MAIN_KEYBOARD = [
-    ["🏆 Epic kartalar"],
-    ["⚽ O'yinchi qidirish", "📊 Reytinglar"],
-    ["📰 Yangiliklar", "📅 Eventlar"],
-]
-
-# Epic menyu tugmalari
-EPIC_KEYBOARD = [
-    ["🇦🇷 Messi", "🇵🇹 Ronaldo"],
-    ["🇧🇷 Neymar", "🇧🇷 Ronaldinho"],
-    ["⬅️ Orqaga"],
-]
-
-
+# --- BUYRUKLAR (COMMANDS) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Botni ishga tushirish va asosiy menyuni ko'rsatish"""
-    await update.message.reply_text(
-        "⚽ eFoot Hub botiga xush kelibsiz!\nKerakli bo'limni tanlang:",
-        reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
+    user = update.effective_user
+    save_user(user.id, user.username) # Foydalanuvchini bazaga saqlaymiz
+    
+    welcome_text = (
+        f"⚽️ **Assalomu alaykum, {user.first_name}!**\n\n"
+        f"eFootball Master botiga xush kelibsiz! Bu yerda siz eng so'nggi yangiliklar, "
+        f"taktikalar va turnirlar haqida ma'lumot olishingiz mumkin.\n\n"
+        f"👇 Kerakli bo'limni tanlang:"
     )
+    await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
 
+# --- ADMIN PANEL (FAQAT ADMIN UCHUN) ---
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return # Agar admin bo'lmasa, buyruq ishlamaydi
+        
+    users = get_all_users()
+    count = len(users)
+    
+    admin_text = (
+        f"🖥 **Admin Panelga xush kelibsiz!**\n\n"
+        f"👥 Jami foydalanuvchilar: `{count}` ta\n\n"
+        f"📢 Hammaga xabar yuborish uchun: `/send [xabar matni]` ko'rinishida yozing."
+    )
+    await update.message.reply_text(admin_text, parse_mode="Markdown")
 
-async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Foydalanuvchi xabarlarini qayta ishlash"""
+async def admin_send_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+        
+    # Buyruqdan keyingi matnni olish
+    if not context.args:
+        await update.message.reply_text("❌ Xato! Xabar matnini yozing. M-n: `/send Salom jamoa`")
+        return
+        
+    reklama_text = " ".join(context.args)
+    users = get_all_users()
+    
+    await update.message.reply_text(f"⏳ {len(users)} ta foydalanuvchiga xabar yuborish boshlandi...")
+    
+    success = 0
+    for user_id in users:
+        try:
+            await context.bot.send_message(chat_id=int(user_id), text=reklama_text)
+            success += 1
+        except Exception as e:
+            logger.error(f"Xabar yuborilmadi {user_id}: {e}")
+            
+    await update.message.reply_text(f"✅ Xabar tarqatish yakunlandi!\n🎯 Muvaffaqiyatli yetkazildi: {success} ta.")
+
+# --- MATNLARNI QAYTA ISHLASH (MESSAGE HANDLER) ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
+    user = update.effective_user
+    save_user(user.id, user.username) # Har ehtimolga qarshi bazani yangilash
 
-    if text == "🏆 Epic kartalar":
-        await update.message.reply_text(
-            "Epic futbolchini tanlang:",
-            reply_markup=ReplyKeyboardMarkup(EPIC_KEYBOARD, resize_keyboard=True),
+    if text == "🎮 Efootball Master":
+        # Chiroyli Inline tugmalar
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏆 Turnirlar", callback_data="turnir"),
+             InlineKeyboardButton("📋 Taktikalar", callback_data="taktika")],
+            [InlineKeyboardButton("🌐 Bizning Kanal", url="https://t.me/Google")] # O'zingizni kanalingiz linkini qo'ying
+        ])
+        await update.message.reply_text("🎮 Kerakli menyuni tanlang:", reply_markup=keyboard)
+        
+    elif text == "ℹ️ Bot haqida":
+        await update.message.reply_text("ℹ️ Ushbu bot eFootball ishqibozlari uchun maxsus yaratilgan mukammal tizimdir.")
+        
+    elif text == "👤 Profil":
+        profil_text = (
+            f"👤 **Sizning Profilingiz:**\n\n"
+            f"🆔 ID: `{user.id}`\n"
+            f"✍️ Ism: {user.first_name}\n"
+            f"🔗 Username: @{user.username or 'yoq'}"
         )
+        await update.message.reply_text(profil_text, parse_mode="Markdown")
+        
+    elif text == "⚙️ Sozlamalar":
+        await update.message.reply_text("⚙️ Sozlamalar bo'limi tez kunda ishga tushadi.")
 
-    elif text == "⬅️ Orqaga":
-        await start(update, context)
+# --- INLINE TUGMALAR JAVOBI (CALLBACK QUERY) ---
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() # Tugma bosilganda qotib qolmasligi uchun
+    
+    if query.data == "turnir":
+        await query.message.edit_text("🏆 Hozirda faol turnirlar mavjud emas. Tez kunda yangi turnir start oladi!")
+        
+    elif query.data == "taktika":
+        await query.message.edit_text("📋 Eng kuchli taktikalar:\n\n1. 4-2-1-3 (Hujumkor)\n2. 4-3-3 (Klassik)\n3. 5-2-2-1 (Himoyaviy)")
 
-    elif text in PLAYERS:
-        player = PLAYERS[text]
-        image_path = player["image"]
-        info_text = player["info"]
+# --- XATOLIKLARNI BOSHqarish ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error(msg="Botda kutilmagan xatolik yuz berdi:", exc_info=context.error)
 
-        # Rasm mavjudligini tekshirish (Bot o'chib qolmasligi uchun)
-        if os.path.exists(image_path):
-            with open(image_path, "rb") as photo:
-                await update.message.reply_photo(photo=photo, caption=info_text)
-        else:
-            # Agar rasm topilmasa, faqat matnning o'zini yuboradi
-            await update.message.reply_text(
-                f"⚠️ Rasm topilmadi, lekin ma'lumotlar:\n\n{info_text}"
-            )
-
-    elif text == "⚽ O'yinchi qidirish":
-        await update.message.reply_text(
-            "🔍 O'yinchi nomini kiriting (Tez orada qidiruv tizimi qo'shiladi)."
-        )
-
-    elif text == "📊 Reytinglar":
-        await update.message.reply_text("📊 Haftalik va umumiy reytinglar.")
-
-    elif text == "📰 Yangiliklar":
-        await update.message.reply_text("📰 eFootball yangiliklari tez orada qo'shiladi.")
-
-    elif text == "📅 Eventlar":
-        await update.message.reply_text(
-            "📅 Yangi eventlar va sovg'alar ro'yxati tez orada."
-        )
-
-
+# --- ASOSIY ISHGA TUSHIRISH (MAIN) ---
 def main():
+    # Render'dagi Environment Variables'dan tokenni olish
+    TOKEN = os.getenv("BOT_TOKEN")
+    
+    if not TOKEN:
+        print("❌ Xato: BOT_TOKEN topilmadi!")
+        return
+
+    # Bot ilovasini qurish
     app = Application.builder().token(TOKEN).build()
 
+    # Handlerlarni ro'yxatdan o'tkazish
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("send", admin_send_reklama))
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    
+    # Xatolik signalini ulash
+    app.add_error_handler(error_handler)
 
+    # Botni ishga tushirish (Polling rejimida Render uchun eng qulayi)
     print("Bot muvaffaqiyatli ishga tushdi...")
     app.run_polling()
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
