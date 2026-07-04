@@ -1,173 +1,441 @@
 import os
 import json
-import logging
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-
-# 1. Loglarni sozlash (Xatoliklarni Render logs'da ko'rish uchun)
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+import time
+import re
+import yt_dlp
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
-logger = logging.getLogger(__name__)
+from telegram.constants import ParseMode, ChatAction
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
 
-# Baza fayli nomi
-DB_FILE = "users_db.json"
-ADMIN_ID = 7770204757  # ⚠️ DIQQAT: Bu yerga o'zingizning Telegram ID'angizni yozing!
+# ================== SOZLAMALAR ==================
+BOT_TOKEN = "8969856307:AAFvORs8AnXrw1Evc44d6nLo9_8lUe7EwuI"
+ADMIN_IDS = [123456789]  # <-- O'zingizning Telegram ID'ingizni qo'ying (@userinfobot orqali bilib olasiz)
 
-# Foydalanuvchini bazaga qo'shish funksiyasi
-def save_user(user_id, username):
-    if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump({}, f)
-    
-    with open(DB_FILE, "r") as f:
-        data = json.load(f)
-    
-    if str(user_id) not in data:
-        data[str(user_id)] = {"username": username or "Mavjud emas"}
-        with open(DB_FILE, "w") as f:
-            json.dump(data, f, indent=4)
+DOWNLOAD_DIR = "downloads"
+SAVED_FILE = "saved_videos.json"
+USERS_FILE = "users.json"
 
-# Bazadagi barcha foydalanuvchilarni olish
-def get_all_users():
-    if not os.path.exists(DB_FILE):
+COOLDOWN_SECONDS = 8  # bir foydalanuvchi ikkita so'rov orasidagi minimal vaqt
+
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+URL_PATTERN = re.compile(
+    r"(https?://)?(www\.)?(instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/\S+"
+)
+
+# --- Menu tugmalari ---
+MENU_DOWNLOAD = "🔗 Video yuklash"
+MENU_SAVED = "💾 Saqlangan videolarim"
+MENU_HELP = "🆘 Yordam"
+
+MAIN_MENU = ReplyKeyboardMarkup(
+    [[MENU_DOWNLOAD, MENU_SAVED], [MENU_HELP]],
+    resize_keyboard=True,
+)
+
+# So'rov vaqtlarini xotirada saqlash (cooldown uchun)
+last_request_time = {}
+# Foydalanuvchi yuborgan URL'ni vaqtincha saqlab turish (format tanlashi kutilayotganda)
+pending_urls = {}
+
+
+# ================== MA'LUMOTLAR (JSON) ==================
+
+def load_json(path: str) -> dict:
+    if not os.path.exists(path):
         return {}
-    with open(DB_FILE, "r") as f:
-        return json.load(f)
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError:
+            return {}
 
-# --- KLAVIATURALAR ---
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["🎮 Efootball Master", "ℹ️ Bot haqida"],
-        ["⚙️ Sozlamalar", "👤 Profil"]
-    ],
-    resize_keyboard=True
-)
 
-# --- BUYRUKLAR (COMMANDS) ---
+def save_json(path: str, data: dict):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def register_user(user_id: int, username: str):
+    users = load_json(USERS_FILE)
+    key = str(user_id)
+    if key not in users:
+        users[key] = {"username": username or "noma'lum", "downloads": 0}
+        save_json(USERS_FILE, users)
+
+
+def increment_download_count(user_id: int):
+    users = load_json(USERS_FILE)
+    key = str(user_id)
+    if key in users:
+        users[key]["downloads"] = users[key].get("downloads", 0) + 1
+        save_json(USERS_FILE, users)
+
+
+def add_saved_video(user_id: int, file_id: str, title: str, media_type: str):
+    data = load_json(SAVED_FILE)
+    key = str(user_id)
+    if key not in data:
+        data[key] = []
+    if any(v["file_id"] == file_id for v in data[key]):
+        return False
+    data[key].append({"file_id": file_id, "title": title, "type": media_type})
+    save_json(SAVED_FILE, data)
+    return True
+
+
+def get_saved_videos(user_id: int) -> list:
+    return load_json(SAVED_FILE).get(str(user_id), [])
+
+
+# ================== KOMANDALAR ==================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    save_user(user.id, user.username) # Foydalanuvchini bazaga saqlaymiz
-    
-    welcome_text = (
-        f"⚽️ **Assalomu alaykum, {user.first_name}!**\n\n"
-        f"eFootball Master botiga xush kelibsiz! Bu yerda siz eng so'nggi yangiliklar, "
-        f"taktikalar va turnirlar haqida ma'lumot olishingiz mumkin.\n\n"
-        f"👇 Kerakli bo'limni tanlang:"
-    )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown", reply_markup=MAIN_KEYBOARD)
+    register_user(user.id, user.username)
 
-# --- ADMIN PANEL (FAQAT ADMIN UCHUN) ---
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return # Agar admin bo'lmasa, buyruq ishlamaydi
-        
-    users = get_all_users()
-    count = len(users)
-    
-    admin_text = (
-        f"🖥 **Admin Panelga xush kelibsiz!**\n\n"
-        f"👥 Jami foydalanuvchilar: `{count}` ta\n\n"
-        f"📢 Hammaga xabar yuborish uchun: `/send [xabar matni]` ko'rinishida yozing."
-    )
-    await update.message.reply_text(admin_text, parse_mode="Markdown")
+    welcome_text = f"""
+👋 Salom, *{user.first_name}*!
 
-async def admin_send_reklama(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+🎬 Men *Instagram*, *YouTube* va *TikTok* dan video/audio yuklab beruvchi zamonaviy botman.
+
+*Qanday foydalanish kerak?*
+1️⃣ Menga video havolasini yuboring
+2️⃣ 🎬 Video yoki 🎵 Audio formatini tanlang
+3️⃣ Yuklanish jarayonini kuzating ⏳
+4️⃣ Tayyor bo'lgach, xohlasangiz *"💾 Saqlash"* tugmasi bilan botda saqlab qo'ying
+
+*Qo'llab-quvvatlanadigan platformalar:*
+📸 Instagram — post, reels
+▶️ YouTube — video, shorts
+🎵 TikTok
+
+⚠️ Fayl hajmi 50MB dan oshsa, Telegram cheklovi tufayli yuborilmaydi.
+
+Quyidagi menyudan foydalaning yoki to'g'ridan-to'g'ri havola yuboring! 🚀
+"""
+    await update.message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_MENU)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = """
+🆘 *Yordam*
+
+*Bot qanday ishlaydi?*
+Instagram, YouTube yoki TikTok havolasini yuboring, so'ng formatni tanlang.
+
+*Videoni qanday saqlab qo'yaman?*
+Yuklab bo'lingach, *"💾 Saqlash"* tugmasini bosing — keyin *"💾 Saqlangan videolarim"* bo'limidan qayta topasiz.
+
+*Nega xatolik chiqyapti?*
+• Havola noto'g'ri yoki video o'chirilgan
+• Akkaunt yopiq (private)
+• Fayl hajmi 50MB dan katta
+• Juda tez-tez so'rov yuborilgan (biroz kuting)
+
+*Buyruqlar:*
+/start — botni qayta ishga tushirish
+/help — yordam
+"""
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=MAIN_MENU)
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Bu buyruq faqat adminlar uchun.")
         return
-        
-    # Buyruqdan keyingi matnni olish
-    if not context.args:
-        await update.message.reply_text("❌ Xato! Xabar matnini yozing. M-n: `/send Salom jamoa`")
+
+    users = load_json(USERS_FILE)
+    total_users = len(users)
+    total_downloads = sum(u.get("downloads", 0) for u in users.values())
+
+    top_users = sorted(users.items(), key=lambda x: x[1].get("downloads", 0), reverse=True)[:5]
+    top_text = "\n".join(
+        f"{i+1}. @{u[1]['username']} — {u[1]['downloads']} ta"
+        for i, u in enumerate(top_users)
+    ) or "Ma'lumot yo'q"
+
+    text = f"""
+📊 *Bot statistikasi*
+
+👥 Jami foydalanuvchilar: *{total_users}*
+📥 Jami yuklamalar: *{total_downloads}*
+
+🏆 *Eng faol foydalanuvchilar:*
+{top_text}
+"""
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Bu buyruq faqat adminlar uchun.")
         return
-        
-    reklama_text = " ".join(context.args)
-    users = get_all_users()
-    
-    await update.message.reply_text(f"⏳ {len(users)} ta foydalanuvchiga xabar yuborish boshlandi...")
-    
-    success = 0
+
+    text = " ".join(context.args)
+    if not text:
+        await update.message.reply_text("Foydalanish: /broadcast Xabar matni")
+        return
+
+    users = load_json(USERS_FILE)
+    sent, failed = 0, 0
     for user_id in users:
         try:
-            await context.bot.send_message(chat_id=int(user_id), text=reklama_text)
-            success += 1
-        except Exception as e:
-            logger.error(f"Xabar yuborilmadi {user_id}: {e}")
-            
-    await update.message.reply_text(f"✅ Xabar tarqatish yakunlandi!\n🎯 Muvaffaqiyatli yetkazildi: {success} ta.")
+            await context.bot.send_message(chat_id=int(user_id), text=f"📢 {text}")
+            sent += 1
+        except Exception:
+            failed += 1
 
-# --- MATNLARNI QAYTA ISHLASH (MESSAGE HANDLER) ---
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user = update.effective_user
-    save_user(user.id, user.username) # Har ehtimolga qarshi bazani yangilash
+    await update.message.reply_text(f"✅ Yuborildi: {sent} ta\n❌ Xato: {failed} ta")
 
-    if text == "🎮 Efootball Master":
-        # Chiroyli Inline tugmalar
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏆 Turnirlar", callback_data="turnir"),
-             InlineKeyboardButton("📋 Taktikalar", callback_data="taktika")],
-            [InlineKeyboardButton("🌐 Bizning Kanal", url="https://t.me/Google")] # O'zingizni kanalingiz linkini qo'ying
-        ])
-        await update.message.reply_text("🎮 Kerakli menyuni tanlang:", reply_markup=keyboard)
-        
-    elif text == "ℹ️ Bot haqida":
-        await update.message.reply_text("ℹ️ Ushbu bot eFootball ishqibozlari uchun maxsus yaratilgan mukammal tizimdir.")
-        
-    elif text == "👤 Profil":
-        profil_text = (
-            f"👤 **Sizning Profilingiz:**\n\n"
-            f"🆔 ID: `{user.id}`\n"
-            f"✍️ Ism: {user.first_name}\n"
-            f"🔗 Username: @{user.username or 'yoq'}"
+
+async def show_saved_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    videos = get_saved_videos(user_id)
+
+    if not videos:
+        await update.message.reply_text(
+            "📭 Sizda hali saqlangan videolar yo'q.\n\n"
+            "Video yuklab, ostidagi \"💾 Saqlash\" tugmasini bosing.",
+            reply_markup=MAIN_MENU,
         )
-        await update.message.reply_text(profil_text, parse_mode="Markdown")
-        
-    elif text == "⚙️ Sozlamalar":
-        await update.message.reply_text("⚙️ Sozlamalar bo'limi tez kunda ishga tushadi.")
-
-# --- INLINE TUGMALAR JAVOBI (CALLBACK QUERY) ---
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer() # Tugma bosilganda qotib qolmasligi uchun
-    
-    if query.data == "turnir":
-        await query.message.edit_text("🏆 Hozirda faol turnirlar mavjud emas. Tez kunda yangi turnir start oladi!")
-        
-    elif query.data == "taktika":
-        await query.message.edit_text("📋 Eng kuchli taktikalar:\n\n1. 4-2-1-3 (Hujumkor)\n2. 4-3-3 (Klassik)\n3. 5-2-2-1 (Himoyaviy)")
-
-# --- XATOLIKLARNI BOSHqarish ---
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(msg="Botda kutilmagan xatolik yuz berdi:", exc_info=context.error)
-
-# --- ASOSIY ISHGA TUSHIRISH (MAIN) ---
-def main():
-    # Render'dagi Environment Variables'dan tokenni olish
-    TOKEN = os.getenv("BOT_TOKEN")
-    
-    if not TOKEN:
-        print("❌ Xato: BOT_TOKEN topilmadi!")
         return
 
-    # Bot ilovasini qurish
-    app = Application.builder().token(TOKEN).build()
+    await update.message.reply_text(f"💾 Sizda {len(videos)} ta saqlangan fayl bor:")
 
-    # Handlerlarni ro'yxatdan o'tkazish
+    for i, video in enumerate(videos, start=1):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🗑 O'chirish", callback_data=f"delete:{i - 1}")]]
+        )
+        caption = f"{i}. {video['title']}"
+        if video.get("type") == "audio":
+            await update.message.reply_audio(audio=video["file_id"], caption=caption, reply_markup=keyboard)
+        else:
+            await update.message.reply_video(video=video["file_id"], caption=caption, reply_markup=keyboard)
+
+
+# ================== HAVOLANI QABUL QILISH ==================
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    user = update.effective_user
+    register_user(user.id, user.username)
+
+    if text == MENU_DOWNLOAD:
+        await update.message.reply_text("🔗 Instagram, YouTube yoki TikTok havolasini yuboring.")
+        return
+    if text == MENU_SAVED:
+        await show_saved_videos(update, context)
+        return
+    if text == MENU_HELP:
+        await help_command(update, context)
+        return
+
+    if not URL_PATTERN.search(text):
+        await update.message.reply_text(
+            "Iltimos, faqat YouTube, Instagram yoki TikTok havolasini yuboring, "
+            "yoki quyidagi menyudan foydalaning."
+        )
+        return
+
+    # --- Cooldown tekshiruvi ---
+    now = time.time()
+    last = last_request_time.get(user.id, 0)
+    if now - last < COOLDOWN_SECONDS:
+        wait = int(COOLDOWN_SECONDS - (now - last))
+        await update.message.reply_text(f"⏱ Iltimos, {wait} soniya kuting va qayta urinib ko'ring.")
+        return
+    last_request_time[user.id] = now
+
+    # URL'ni vaqtincha saqlaymiz, formatni tanlaguncha
+    pending_urls[user.id] = text
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🎬 Video", callback_data="fmt:video"),
+                InlineKeyboardButton("🎵 Audio (MP3)", callback_data="fmt:audio"),
+            ]
+        ]
+    )
+    await update.message.reply_text("Qanday formatda yuklab beray?", reply_markup=keyboard)
+
+
+# ================== YUKLASH JARAYONI ==================
+
+async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: str, media_type: str, user_id: int):
+    status_msg = await update_message.reply_text("⏳ Boshlanmoqda...")
+    await context.bot.send_chat_action(chat_id=update_message.chat_id, action=ChatAction.UPLOAD_VIDEO)
+
+    last_percent = {"value": -10}
+
+    def progress_hook(d):
+        if d["status"] == "downloading":
+            percent_str = d.get("_percent_str", "0%").strip().replace("%", "")
+            try:
+                percent = float(percent_str)
+            except ValueError:
+                return
+            # Har 10% da bir marta yangilaymiz (Telegramni spam qilib qo'ymaslik uchun)
+            if percent - last_percent["value"] >= 10:
+                last_percent["value"] = percent
+                bar_filled = int(percent // 10)
+                bar = "🟩" * bar_filled + "⬜" * (10 - bar_filled)
+                try:
+                    context.application.create_task(
+                        status_msg.edit_text(f"⏳ Yuklanmoqda...\n{bar} {percent:.0f}%")
+                    )
+                except Exception:
+                    pass
+
+    ydl_opts = {
+        "outtmpl": f"{DOWNLOAD_DIR}/%(id)s.%(ext)s",
+        "quiet": True,
+        "noplaylist": True,
+        "progress_hooks": [progress_hook],
+    }
+
+    if media_type == "audio":
+        ydl_opts["format"] = "bestaudio/best"
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ]
+    else:
+        ydl_opts["format"] = "mp4/best"
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if media_type == "audio":
+                filename = os.path.splitext(filename)[0] + ".mp3"
+
+        file_size_mb = os.path.getsize(filename) / (1024 * 1024)
+        if file_size_mb > 50:
+            os.remove(filename)
+            await status_msg.edit_text(
+                f"⚠️ Fayl hajmi {file_size_mb:.1f}MB — Telegramning 50MB "
+                f"cheklovidan katta, yuborib bo'lmaydi."
+            )
+            return
+
+        await status_msg.edit_text("📤 Yuborilmoqda...")
+        title = info.get("title", "Nomsiz fayl")
+
+        temp_keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("💾 Saqlash", callback_data="save_pending")]]
+        )
+
+        with open(filename, "rb") as f:
+            if media_type == "audio":
+                sent_message = await update_message.reply_audio(
+                    audio=f, title=title, caption=title, reply_markup=temp_keyboard
+                )
+                real_file_id = sent_message.audio.file_id
+            else:
+                sent_message = await update_message.reply_video(
+                    video=f, caption=title, reply_markup=temp_keyboard
+                )
+                real_file_id = sent_message.video.file_id
+
+        new_keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(
+                "💾 Saqlash",
+                callback_data=f"save:{media_type}:{real_file_id}:{title[:40]}"
+            )]]
+        )
+        await sent_message.edit_reply_markup(reply_markup=new_keyboard)
+
+        os.remove(filename)
+        await status_msg.delete()
+        increment_download_count(user_id)
+
+    except yt_dlp.utils.DownloadError:
+        await status_msg.edit_text(
+            "❌ Yuklab bo'lmadi. Havola noto'g'ri, kontent o'chirilgan "
+            "yoki akkaunt yopiq (private) bo'lishi mumkin."
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Kutilmagan xatolik: {e}")
+
+
+# ================== INLINE TUGMALAR ==================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+
+    if data.startswith("fmt:"):
+        media_type = data.split(":", 1)[1]
+        url = pending_urls.pop(user_id, None)
+        await query.answer()
+        await query.edit_message_text(f"✅ Tanlandi: {'🎵 Audio' if media_type == 'audio' else '🎬 Video'}")
+
+        if not url:
+            await query.message.reply_text("⚠️ Havola topilmadi, qaytadan yuboring.")
+            return
+
+        await do_download(query.message, context, url, media_type, user_id)
+        return
+
+    if data.startswith("save:"):
+        _, media_type, file_id, title = data.split(":", 3)
+        added = add_saved_video(user_id, file_id, title, media_type)
+        if added:
+            await query.answer("✅ Saqlandi!", show_alert=True)
+        else:
+            await query.answer("ℹ️ Bu allaqachon saqlangan.", show_alert=True)
+        return
+
+    if data.startswith("delete:"):
+        index = int(data.split(":", 1)[1])
+        all_data = load_json(SAVED_FILE)
+        key = str(user_id)
+        videos = all_data.get(key, [])
+        await query.answer()
+        if 0 <= index < len(videos):
+            videos.pop(index)
+            all_data[key] = videos
+            save_json(SAVED_FILE, all_data)
+            await query.edit_message_caption(caption="🗑 O'chirildi")
+        else:
+            await query.answer("❌ Topilmadi.", show_alert=True)
+        return
+
+    await query.answer()
+
+
+# ================== ISHGA TUSHIRISH ==================
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CommandHandler("send", admin_send_reklama))
-    
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    
-    # Xatolik signalini ulash
-    app.add_error_handler(error_handler)
 
-    # Botni ishga tushirish (Polling rejimida Render uchun eng qulayi)
-    print("Bot muvaffaqiyatli ishga tushdi...")
     app.run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
