@@ -24,7 +24,7 @@ from telegram.ext import (
 # ================== SOZLAMALAR ==================
 # Render'da bu qiymatlar Environment Variables orqali beriladi.
 # Lokal kompyuterda ishga tushirsangiz, pastdagi "SIZNING_BOT_TOKEN" ni to'g'ridan-to'g'ri o'zgartirsangiz ham bo'ladi.
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAGfRXEtbZUaL_jZBamBtYD2iTfJmmLNyLo")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAFvORs8AnXrw1Evc44d6nLo9_8lUe7EwuI")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()]
 
 
