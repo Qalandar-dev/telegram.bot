@@ -336,6 +336,14 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         "progress_hooks": [progress_hook],
     }
 
+    # Instagram ko'pincha login (cookies) talab qiladi. Agar cookies fayli
+    # mavjud bo'lsa (Render'da "Secret File" sifatida yuklangan bo'lsa), ishlatamiz.
+    if "instagram.com" in url:
+        for cookie_path in ("/etc/secrets/cookies.txt", "cookies.txt"):
+            if os.path.exists(cookie_path):
+                ydl_opts["cookiefile"] = cookie_path
+                break
+
     if media_type == "audio":
         ydl_opts["format"] = "bestaudio/best"
         ydl_opts["postprocessors"] = [
