@@ -2,6 +2,8 @@ import os
 import json
 import time
 import re
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import yt_dlp
 from telegram import (
     Update,
@@ -20,8 +22,31 @@ from telegram.ext import (
 )
 
 # ================== SOZLAMALAR ==================
-BOT_TOKEN = "8969856307:AAFvORs8AnXrw1Evc44d6nLo9_8lUe7EwuI"
-ADMIN_IDS = [123456789]  # <-- O'zingizning Telegram ID'ingizni qo'ying (@userinfobot orqali bilib olasiz)
+# Render'da bu qiymatlar Environment Variables orqali beriladi.
+# Lokal kompyuterda ishga tushirsangiz, pastdagi "SIZNING_BOT_TOKEN" ni to'g'ridan-to'g'ri o'zgartirsangiz ham bo'ladi.
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAFvORs8AnXrw1Evc44d6nLo9_8lUe7EwuI")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()]
+
+
+# ================== RENDER UCHUN KEEP-ALIVE SERVER ==================
+# Render bepul tarifida bot "uxlab qolmasligi" uchun shu mini-server ishlaydi.
+# UptimeRobot (yoki shunga o'xshash xizmat) shu manzilga muntazam so'rov yuborib turadi.
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot ishlamoqda!")
+
+    def log_message(self, format, *args):
+        pass  # konsolni keraksiz loglar bilan to'ldirmaslik uchun
+
+
+def run_health_server():
+    port = int(os.getenv("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 DOWNLOAD_DIR = "downloads"
 SAVED_FILE = "saved_videos.json"
@@ -49,6 +74,10 @@ MAIN_MENU = ReplyKeyboardMarkup(
 last_request_time = {}
 # Foydalanuvchi yuborgan URL'ni vaqtincha saqlab turish (format tanlashi kutilayotganda)
 pending_urls = {}
+# Saqlash tugmasi bosilganda kerakli file_id/sarlavha ma'lumotini vaqtincha saqlab turish
+# (Telegram callback_data uzunligi 64 bayt bilan cheklangani uchun file_id'ni to'g'ridan-to'g'ri tugmaga yozib bo'lmaydi)
+pending_saves = {}
+save_counter = {"value": 0}
 
 
 # ================== MA'LUMOTLAR (JSON) ==================
@@ -354,11 +383,18 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
                 )
                 real_file_id = sent_message.video.file_id
 
+        # file_id uzun bo'lgani uchun uni to'g'ridan-to'g'ri tugmaga yozib bo'lmaydi
+        # (Telegram callback_data cheklovi — 64 bayt). Shuning uchun qisqa kalit yaratamiz.
+        save_counter["value"] += 1
+        save_key = save_counter["value"]
+        pending_saves[save_key] = {
+            "file_id": real_file_id,
+            "title": title,
+            "media_type": media_type,
+        }
+
         new_keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(
-                "💾 Saqlash",
-                callback_data=f"save:{media_type}:{real_file_id}:{title[:40]}"
-            )]]
+            [[InlineKeyboardButton("💾 Saqlash", callback_data=f"save:{save_key}")]]
         )
         await sent_message.edit_reply_markup(reply_markup=new_keyboard)
 
@@ -396,8 +432,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("save:"):
-        _, media_type, file_id, title = data.split(":", 3)
-        added = add_saved_video(user_id, file_id, title, media_type)
+        save_key = int(data.split(":", 1)[1])
+        info = pending_saves.pop(save_key, None)
+
+        if not info:
+            await query.answer("⚠️ Bu tugma muddati o'tgan, videoni qayta yuklab ko'ring.", show_alert=True)
+            return
+
+        added = add_saved_video(user_id, info["file_id"], info["title"], info["media_type"])
         if added:
             await query.answer("✅ Saqlandi!", show_alert=True)
         else:
@@ -425,6 +467,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== ISHGA TUSHIRISH ==================
 
 def main():
+    # Keep-alive serverni alohida oqimda (thread) ishga tushiramiz,
+    # shunda u botning asosiy ishlashiga xalaqit bermaydi.
+    threading.Thread(target=run_health_server, daemon=True).start()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
