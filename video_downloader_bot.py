@@ -27,6 +27,28 @@ from telegram.ext import (
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAGfRXEtbZUaL_jZBamBtYD2iTfJmmLNyLo")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()]
 
+DOWNLOAD_DIR = "downloads"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+# Render'ning "Secret Files" joylashuvi (/etc/secrets/) faqat o'qish uchun (read-only),
+# lekin yt-dlp cookie faylini ba'zan yozishga urinadi. Shuning uchun uni yoziladigan
+# joyga (downloads papkasiga) nusxalab olamiz va o'sha nusxa bilan ishlaymiz.
+COOKIES_WRITABLE_PATH = os.path.join(DOWNLOAD_DIR, "cookies.txt")
+
+def prepare_cookies_file():
+    import shutil
+    for source in ("/etc/secrets/cookies.txt", "cookies.txt"):
+        if os.path.exists(source):
+            try:
+                shutil.copy(source, COOKIES_WRITABLE_PATH)
+                print(f"[COOKIES] {source} dan nusxa olindi: {COOKIES_WRITABLE_PATH}")
+                return COOKIES_WRITABLE_PATH
+            except Exception as e:
+                print(f"[COOKIES XATOLIK] {e}")
+    return None
+
+COOKIES_PATH = prepare_cookies_file()
+
 
 # ================== RENDER UCHUN KEEP-ALIVE SERVER ==================
 # Render bepul tarifida bot "uxlab qolmasligi" uchun shu mini-server ishlaydi.
@@ -48,13 +70,10 @@ def run_health_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
-DOWNLOAD_DIR = "downloads"
 SAVED_FILE = "saved_videos.json"
 USERS_FILE = "users.json"
 
 COOLDOWN_SECONDS = 8  # bir foydalanuvchi ikkita so'rov orasidagi minimal vaqt
-
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 URL_PATTERN = re.compile(
     r"(https?://)?(www\.)?(instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/\S+"
@@ -336,13 +355,9 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         "progress_hooks": [progress_hook],
     }
 
-    # Instagram ko'pincha login (cookies) talab qiladi. Agar cookies fayli
-    # mavjud bo'lsa (Render'da "Secret File" sifatida yuklangan bo'lsa), ishlatamiz.
-    if "instagram.com" in url:
-        for cookie_path in ("/etc/secrets/cookies.txt", "cookies.txt"):
-            if os.path.exists(cookie_path):
-                ydl_opts["cookiefile"] = cookie_path
-                break
+    # Instagram ko'pincha login (cookies) talab qiladi.
+    if "instagram.com" in url and COOKIES_PATH:
+        ydl_opts["cookiefile"] = COOKIES_PATH
 
     if media_type == "audio":
         ydl_opts["format"] = "bestaudio/best"
