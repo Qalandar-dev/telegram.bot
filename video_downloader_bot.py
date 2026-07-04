@@ -402,12 +402,14 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         await status_msg.delete()
         increment_download_count(user_id)
 
-    except yt_dlp.utils.DownloadError:
+    except yt_dlp.utils.DownloadError as e:
+        print(f"[YT-DLP XATOLIK] URL: {url}\nSabab: {e}")
         await status_msg.edit_text(
             "❌ Yuklab bo'lmadi. Havola noto'g'ri, kontent o'chirilgan "
             "yoki akkaunt yopiq (private) bo'lishi mumkin."
         )
     except Exception as e:
+        print(f"[KUTILMAGAN XATOLIK] URL: {url}\nSabab: {e}")
         await status_msg.edit_text(f"❌ Kutilmagan xatolik: {e}")
 
 
