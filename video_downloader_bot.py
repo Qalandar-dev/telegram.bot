@@ -3,6 +3,7 @@ import json
 import time
 import re
 import threading
+import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import yt_dlp
 from telegram import (
@@ -270,6 +271,8 @@ async def show_saved_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption = f"{i}. {video['title']}"
         if video.get("type") == "audio":
             await update.message.reply_audio(audio=video["file_id"], caption=caption, reply_markup=keyboard)
+        elif video.get("type") == "photo":
+            await update.message.reply_photo(photo=video["file_id"], caption=caption, reply_markup=keyboard)
         else:
             await update.message.reply_video(video=video["file_id"], caption=caption, reply_markup=keyboard)
 
@@ -322,6 +325,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================== YUKLASH JARAYONI ==================
+
+def parse_netscape_cookies(cookies_path: str) -> dict:
+    """Netscape formatidagi cookie faylini requests uchun lug'atga aylantiradi."""
+    cookies = {}
+    try:
+        with open(cookies_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("#") or not line.strip():
+                    continue
+                parts = line.strip().split("\t")
+                if len(parts) >= 7:
+                    cookies[parts[5]] = parts[6]
+    except Exception as e:
+        print(f"[COOKIES O'QISH XATOLIK] {e}")
+    return cookies
+
+
+def fetch_instagram_image(url: str, cookies_path: str = None):
+    """
+    yt-dlp video topolmaganda (masalan post shunchaki rasm bo'lsa),
+    sahifadan to'g'ridan-to'g'ri rasm manzilini (og:image) olib, yuklab beradi.
+    """
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+        )
+    }
+    cookies = parse_netscape_cookies(cookies_path) if cookies_path and os.path.exists(cookies_path) else None
+
+    resp = requests.get(url, headers=headers, cookies=cookies, timeout=15)
+    resp.raise_for_status()
+
+    match = re.search(r'<meta property="og:image" content="([^"]+)"', resp.text)
+    if not match:
+        return None
+
+    image_url = match.group(1).replace("&amp;", "&")
+    img_resp = requests.get(image_url, headers=headers, timeout=15)
+    img_resp.raise_for_status()
+
+    filename = os.path.join(DOWNLOAD_DIR, f"insta_image_{int(time.time())}.jpg")
+    with open(filename, "wb") as f:
+        f.write(img_resp.content)
+    return filename
+
 
 async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: str, media_type: str, user_id: int):
     status_msg = await update_message.reply_text("⏳ Boshlanmoqda...")
@@ -427,6 +476,43 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
 
     except yt_dlp.utils.DownloadError as e:
         print(f"[YT-DLP XATOLIK] URL: {url}\nSabab: {e}")
+
+        # Video topilmadi — ehtimol bu shunchaki rasm posti. Rasm sifatida urinib ko'ramiz.
+        if "instagram.com" in url:
+            try:
+                await status_msg.edit_text("🖼 Video topilmadi, rasm sifatida urinib ko'ryapman...")
+                image_path = fetch_instagram_image(url, COOKIES_PATH)
+
+                if image_path:
+                    title = "Instagram rasm"
+                    temp_keyboard = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("💾 Saqlash", callback_data="save_pending")]]
+                    )
+                    with open(image_path, "rb") as f:
+                        sent_message = await update_message.reply_photo(
+                            photo=f, caption=title, reply_markup=temp_keyboard
+                        )
+                    real_file_id = sent_message.photo[-1].file_id
+
+                    save_counter["value"] += 1
+                    save_key = save_counter["value"]
+                    pending_saves[save_key] = {
+                        "file_id": real_file_id,
+                        "title": title,
+                        "media_type": "photo",
+                    }
+                    new_keyboard = InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("💾 Saqlash", callback_data=f"save:{save_key}")]]
+                    )
+                    await sent_message.edit_reply_markup(reply_markup=new_keyboard)
+
+                    os.remove(image_path)
+                    await status_msg.delete()
+                    increment_download_count(user_id)
+                    return
+            except Exception as img_err:
+                print(f"[RASM YUKLASH XATOLIK] {img_err}")
+
         await status_msg.edit_text(
             "❌ Yuklab bo'lmadi. Havola noto'g'ri, kontent o'chirilgan "
             "yoki akkaunt yopiq (private) bo'lishi mumkin."
