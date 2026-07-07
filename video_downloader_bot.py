@@ -83,12 +83,19 @@ URL_PATTERN = re.compile(
 # --- Menu tugmalari ---
 MENU_DOWNLOAD = "🔗 Video yuklash"
 MENU_SAVED = "💾 Saqlangan videolarim"
+MENU_AI = "🤖 AI bilan suhbat"
 MENU_HELP = "🆘 Yordam"
 
 MAIN_MENU = ReplyKeyboardMarkup(
-    [[MENU_DOWNLOAD, MENU_SAVED], [MENU_HELP]],
+    [[MENU_DOWNLOAD, MENU_SAVED], [MENU_AI, MENU_HELP]],
     resize_keyboard=True,
 )
+
+# Foydalanuvchi hozir "AI rejimi"da yoki "video yuklash rejimi"da ekanini bilish uchun
+ai_mode_users = set()
+
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # So'rov vaqtlarini xotirada saqlash (cooldown uchun)
 last_request_time = {}
@@ -170,6 +177,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📸 Instagram — post, reels
 ▶️ YouTube — video, shorts
 🎵 TikTok
+
+🤖 Bundan tashqari, *"AI bilan suhbat"* tugmasi orqali menga istalgan savolingizni berishingiz ham mumkin!
 
 ⚠️ Fayl hajmi 50MB dan oshsa, Telegram cheklovi tufayli yuborilmaydi.
 
@@ -279,10 +288,74 @@ async def show_saved_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== HAVOLANI QABUL QILISH ==================
 
+AI_EXIT_BUTTON = "⬅️ AI rejimidan chiqish"
+
+AI_MENU = ReplyKeyboardMarkup(
+    [[AI_EXIT_BUTTON]],
+    resize_keyboard=True,
+)
+
+
+async def ask_groq(user_text: str) -> str:
+    """Groq API orqali AI javobini oladi (bepul, tez model)."""
+    if not GROQ_API_KEY:
+        return "⚠️ AI hali sozlanmagan (GROQ_API_KEY topilmadi). Admin bilan bog'laning."
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Sen foydali, do'stona AI yordamchisan. O'zbek tilida javob ber, qisqa va tushunarli yoz.",
+            },
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 1000,
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        print(f"[GROQ XATOLIK] {e}")
+        return "❌ AI javob berishda xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring."
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.effective_user
     register_user(user.id, user.username)
+
+    # --- AI rejimidan chiqish ---
+    if text == AI_EXIT_BUTTON:
+        ai_mode_users.discard(user.id)
+        await update.message.reply_text("✅ AI rejimidan chiqdingiz.", reply_markup=MAIN_MENU)
+        return
+
+    # --- AI rejimini yoqish ---
+    if text == MENU_AI:
+        ai_mode_users.add(user.id)
+        await update.message.reply_text(
+            "🤖 AI rejimi yoqildi! Endi menga istalgan savolingizni yozing.\n\n"
+            "Chiqish uchun pastdagi tugmani bosing.",
+            reply_markup=AI_MENU,
+        )
+        return
+
+    # --- Agar foydalanuvchi AI rejimida bo'lsa, xabarni AI'ga yuboramiz ---
+    if user.id in ai_mode_users:
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        answer = await ask_groq(text)
+        await update.message.reply_text(answer, reply_markup=AI_MENU)
+        return
 
     if text == MENU_DOWNLOAD:
         await update.message.reply_text("🔗 Instagram, YouTube yoki TikTok havolasini yuboring.")
@@ -402,11 +475,27 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         "quiet": True,
         "noplaylist": True,
         "progress_hooks": [progress_hook],
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+            )
+        },
     }
 
-    # Instagram ko'pincha login (cookies) talab qiladi.
-    if "instagram.com" in url and COOKIES_PATH:
+    # Cookie fayl mavjud bo'lsa, barcha platformalar uchun ishlatamiz
+    # (Instagram va YouTube ikkalasi ham ba'zan login talab qilishi mumkin).
+    if COOKIES_PATH:
         ydl_opts["cookiefile"] = COOKIES_PATH
+
+    # YouTube'ning "Sign in to confirm you're not a bot" xatosini kamaytirish uchun:
+    # "android" klientini simulyatsiya qilish ko'pincha bu tekshiruvni chetlab o'tadi.
+    if "youtube.com" in url or "youtu.be" in url:
+        ydl_opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android", "web"],
+            }
+        }
 
     if media_type == "audio":
         ydl_opts["format"] = "bestaudio/best"
