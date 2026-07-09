@@ -841,7 +841,10 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         },
     }
 
-    if COOKIES_PATH:
+    # Cookie faylni faqat Instagram uchun ishlatamiz. YouTube uchun login qilingan
+    # (cookie) sessiya ko'pincha ko'proq cheklov qo'yishi mumkin (masalan hisobingiz
+    # tasdiqlanmagan bo'lsa), shuning uchun YouTube'da anonim (cookiesiz) so'rov afzal.
+    if COOKIES_PATH and "instagram.com" in url:
         ydl_opts["cookiefile"] = COOKIES_PATH
 
     # Eslatma: "android" klientini majburlash avval YouTube bot-tekshiruvini chetlab
@@ -1169,7 +1172,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
             },
         }
-        if COOKIES_PATH:
+        if COOKIES_PATH and "instagram.com" in query_text:
             ydl_opts["cookiefile"] = COOKIES_PATH
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
