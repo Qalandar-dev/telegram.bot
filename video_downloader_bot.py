@@ -44,8 +44,13 @@ RATINGS_FILE = "ratings.json"
 COOLDOWN_SECONDS = 8
 
 URL_PATTERN = re.compile(
-    r"(https?://)?(www\.)?(instagram\.com|youtube\.com|youtu\.be|tiktok\.com|vm\.tiktok\.com)/\S+"
+    r"(https?://)?(www\.)?(instagram\.com|tiktok\.com|vm\.tiktok\.com)/\S+"
 )
+# Eslatma: YouTube hozircha o'chirilgan — YouTube'ning bot-tekshiruv tizimi
+# bulut serverlar (masalan Render) IP manzillarini qattiq bloklamoqda, va bu
+# butun dunyo bo'ylab yt-dlp foydalanuvchilarida kuzatilayotgan hal qilinmagan
+# muammo. yt-dlp jamoasi tuzatgach, qayta yoqish uchun yuqoridagi qatorga
+# "youtube\.com|youtu\.be|" ni qaytarish kifoya.
 
 # Render'ning "Secret Files" joylashuvi (/etc/secrets/) faqat o'qish uchun (read-only),
 # lekin yt-dlp cookie faylini ba'zan yozishga urinadi. Shuning uchun uni yoziladigan
@@ -110,7 +115,7 @@ TEXTS = {
     "uz": {
         "welcome": (
             "👋 Salom, *{name}*!\n\n"
-            "🎬 Men *Instagram*, *YouTube* va *TikTok* dan video/audio yuklab beruvchi zamonaviy botman.\n\n"
+            "🎬 Men *Instagram* va *TikTok* dan video/audio yuklab beruvchi zamonaviy botman.\n\n"
             "*Qanday foydalanish kerak?*\n"
             "1️⃣ Menga video havolasini yuboring\n"
             "2️⃣ Format va sifatni tanlang\n"
@@ -127,8 +132,8 @@ TEXTS = {
         "ai_exit": "⬅️ AI rejimidan chiqish",
         "choose_language": "Tilni tanlang / Выберите язык / Choose language:",
         "language_set": "✅ Til o'zbek tiliga o'zgartirildi.",
-        "ask_link": "🔗 Instagram, YouTube yoki TikTok havolasini yuboring.",
-        "invalid_link": "Iltimos, faqat YouTube, Instagram yoki TikTok havolasini yuboring, yoki quyidagi menyudan foydalaning.",
+        "ask_link": "🔗 Instagram yoki TikTok havolasini yuboring.",
+        "invalid_link": "Iltimos, faqat Instagram yoki TikTok havolasini yuboring, yoki quyidagi menyudan foydalaning.",
         "cooldown": "⏱ Iltimos, {sec} soniya kuting va qayta urinib ko'ring.",
         "choose_format": "Qanday formatda yuklab beray?",
         "quality_best": "🎬 Eng yaxshi sifat",
@@ -160,7 +165,7 @@ TEXTS = {
         "help_text": (
             "🆘 *Yordam*\n\n"
             "*Bot qanday ishlaydi?*\n"
-            "Instagram, YouTube yoki TikTok havolasini yuboring, so'ng format va sifatni tanlang.\n\n"
+            "Instagram yoki TikTok havolasini yuboring, so'ng format va sifatni tanlang.\n\n"
             "*Videoni qanday saqlab qo'yaman?*\n"
             "Yuklab bo'lingach, *\"💾 Saqlash\"* tugmasini bosing.\n\n"
             "*Buyruqlar:*\n"
@@ -196,7 +201,7 @@ TEXTS = {
     "ru": {
         "welcome": (
             "👋 Привет, *{name}*!\n\n"
-            "🎬 Я современный бот для скачивания видео/аудио с *Instagram*, *YouTube* и *TikTok*.\n\n"
+            "🎬 Я современный бот для скачивания видео/аудио с *Instagram* и *TikTok*.\n\n"
             "*Как пользоваться?*\n"
             "1️⃣ Отправьте мне ссылку на видео\n"
             "2️⃣ Выберите формат и качество\n"
@@ -213,8 +218,8 @@ TEXTS = {
         "ai_exit": "⬅️ Выйти из AI режима",
         "choose_language": "Tilni tanlang / Выберите язык / Choose language:",
         "language_set": "✅ Язык изменён на русский.",
-        "ask_link": "🔗 Отправьте ссылку с Instagram, YouTube или TikTok.",
-        "invalid_link": "Пожалуйста, отправьте только ссылку с YouTube, Instagram или TikTok, либо используйте меню ниже.",
+        "ask_link": "🔗 Отправьте ссылку с Instagram или TikTok.",
+        "invalid_link": "Пожалуйста, отправьте только ссылку с Instagram или TikTok, либо используйте меню ниже.",
         "cooldown": "⏱ Пожалуйста, подождите {sec} секунд и попробуйте снова.",
         "choose_format": "В каком формате скачать?",
         "quality_best": "🎬 Лучшее качество",
@@ -246,7 +251,7 @@ TEXTS = {
         "help_text": (
             "🆘 *Помощь*\n\n"
             "*Как работает бот?*\n"
-            "Отправьте ссылку с Instagram, YouTube или TikTok, затем выберите формат и качество.\n\n"
+            "Отправьте ссылку с Instagram или TikTok, затем выберите формат и качество.\n\n"
             "*Как сохранить видео?*\n"
             "После скачивания нажмите *\"💾 Сохранить\"*.\n\n"
             "*Команды:*\n"
@@ -258,7 +263,7 @@ TEXTS = {
     "en": {
         "welcome": (
             "👋 Hello, *{name}*!\n\n"
-            "🎬 I'm a modern bot for downloading video/audio from *Instagram*, *YouTube* and *TikTok*.\n\n"
+            "🎬 I'm a modern bot for downloading video/audio from *Instagram* and *TikTok*.\n\n"
             "*How to use?*\n"
             "1️⃣ Send me a video link\n"
             "2️⃣ Choose format and quality\n"
@@ -275,8 +280,8 @@ TEXTS = {
         "ai_exit": "⬅️ Exit AI mode",
         "choose_language": "Tilni tanlang / Выберите язык / Choose language:",
         "language_set": "✅ Language set to English.",
-        "ask_link": "🔗 Send an Instagram, YouTube or TikTok link.",
-        "invalid_link": "Please send only a YouTube, Instagram or TikTok link, or use the menu below.",
+        "ask_link": "🔗 Send an Instagram or TikTok link.",
+        "invalid_link": "Please send only an Instagram or TikTok link, or use the menu below.",
         "cooldown": "⏱ Please wait {sec} seconds and try again.",
         "choose_format": "Which format should I download?",
         "quality_best": "🎬 Best quality",
@@ -308,7 +313,7 @@ TEXTS = {
         "help_text": (
             "🆘 *Help*\n\n"
             "*How does the bot work?*\n"
-            "Send an Instagram, YouTube or TikTok link, then choose format and quality.\n\n"
+            "Send an Instagram or TikTok link, then choose format and quality.\n\n"
             "*How do I save a video?*\n"
             "After downloading, tap *\"💾 Save\"*.\n\n"
             "*Commands:*\n"
