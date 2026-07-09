@@ -3,8 +3,10 @@ import json
 import time
 import re
 import threading
+import subprocess
 import requests
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import yt_dlp
 from telegram import (
     Update,
@@ -27,7 +29,7 @@ from telegram.ext import (
 )
 
 # ================== SOZLAMALAR ==================
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAGfRXEtbZUaL_jZBamBtYD2iTfJmmLNyLo")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8969856307:AAGfRXEtbZUaL_jZBamBtYD2iTfJmmLNyLo
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "123456789").split(",") if x.strip()]
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -72,6 +74,15 @@ pending_urls = {}
 pending_saves = {}
 save_counter = {"value": 0}
 ai_mode_users = set()
+
+# Tahrirlash uchun: foydalanuvchi matn kiritishini kutayotgan holat
+awaiting_edit_text = {}
+
+# Rejalashtirilgan yuklash uchun
+awaiting_schedule_link = set()
+pending_schedule_url = {}
+
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 # ================== RENDER UCHUN KEEP-ALIVE SERVER ==================
@@ -157,6 +168,30 @@ TEXTS = {
             "/help — yordam\n"
             "/language — tilni o'zgartirish"
         ),
+        # --- Rejalashtirilgan yuklash ---
+        "menu_schedule": "⏰ Rejalashtirilgan yuklash",
+        "schedule_ask_link": "⏰ Qaysi havolani keyinroq yuklab beray? Havolani yuboring.",
+        "schedule_choose_delay": "Qancha vaqtdan keyin yuklab beray?",
+        "schedule_10min": "10 daqiqadan keyin",
+        "schedule_30min": "30 daqiqadan keyin",
+        "schedule_1h": "1 soatdan keyin",
+        "schedule_3h": "3 soatdan keyin",
+        "schedule_confirmed": "✅ Qabul qilindi! {time} da yuklab, sizga yuboraman.",
+        "schedule_starting": "⏰ Rejalashtirilgan vaqt keldi, yuklashni boshlayapman...",
+        # --- Tahrirlash ---
+        "edit_button": "🎨 Tahrirlash",
+        "edit_choose": "Qanday tahrir qilay?",
+        "edit_bw": "⚫ Oq-qora",
+        "edit_sepia": "🟤 Sepiya",
+        "edit_text": "✏️ Matn qo'shish",
+        "edit_cancel": "❌ Bekor qilish",
+        "edit_ask_text": "✏️ Qo'shmoqchi bo'lgan matningizni yozing:",
+        "edit_processing": "🎨 Tahrirlanmoqda...",
+        "edit_done_caption": "🎨 Tahrirlangan versiya",
+        "edit_error": "❌ Tahrirlashda xatolik yuz berdi.",
+        "edit_cancelled": "Bekor qilindi.",
+        # --- Guruh chat ---
+        "group_hint": "🔗 Havolani guruhga yuboring, men avtomatik topib yuklab beraman.",
     },
     "ru": {
         "welcome": (
@@ -298,7 +333,7 @@ def build_main_menu(lang: str) -> ReplyKeyboardMarkup:
         [
             [t(lang, "menu_download"), t(lang, "menu_saved")],
             [t(lang, "menu_ai"), t(lang, "menu_help")],
-            [t(lang, "menu_language")],
+            [t(lang, "menu_schedule"), t(lang, "menu_language")],
         ],
         resize_keyboard=True,
     )
@@ -306,6 +341,17 @@ def build_main_menu(lang: str) -> ReplyKeyboardMarkup:
 
 def build_ai_menu(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup([[t(lang, "ai_exit")]], resize_keyboard=True)
+
+
+def get_menu_markup(update: Update, lang: str):
+    """Guruh chatlarida doimiy klaviaturani ko'rsatmaslik uchun (barcha a'zolarga chiqib, xalaqit berishi mumkin)."""
+    if update.effective_chat.type in ("group", "supergroup"):
+        return None
+    return build_main_menu(lang)
+
+
+def is_group_chat(update: Update) -> bool:
+    return update.effective_chat.type in ("group", "supergroup")
 
 
 # ================== MA'LUMOTLAR (JSON) ==================
@@ -429,6 +475,74 @@ def fetch_instagram_image(url: str, cookies_path: str = None):
     return filename
 
 
+# ================== TAHRIRLASH (rasm/video) ==================
+
+def apply_photo_filter(input_path: str, filter_type: str, text: str = None) -> str:
+    img = Image.open(input_path).convert("RGB")
+
+    if filter_type == "bw":
+        img = ImageOps.grayscale(img).convert("RGB")
+    elif filter_type == "sepia":
+        gray = ImageOps.grayscale(img)
+        sepia = ImageOps.colorize(gray, black="#3a2b1f", white="#d9c7a3")
+        img = sepia.convert("RGB")
+
+    if text:
+        draw = ImageDraw.Draw(img)
+        font_size = max(24, img.width // 18)
+        try:
+            font = ImageFont.truetype(FONT_PATH, font_size)
+        except Exception:
+            font = ImageFont.load_default()
+
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        x = (img.width - text_w) // 2
+        y = img.height - text_h - int(img.height * 0.06)
+
+        # Kontrastni oshirish uchun qora soya + oq matn
+        for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2)]:
+            draw.text((x + dx, y + dy), text, font=font, fill="black")
+        draw.text((x, y), text, font=font, fill="white")
+
+    output_path = os.path.join(DOWNLOAD_DIR, f"edited_{int(time.time())}.jpg")
+    img.save(output_path, quality=92)
+    return output_path
+
+
+def apply_video_filter(input_path: str, filter_type: str, text: str = None) -> str:
+    output_path = os.path.join(DOWNLOAD_DIR, f"edited_{int(time.time())}.mp4")
+
+    filters = []
+    if filter_type == "bw":
+        filters.append("hue=s=0")
+    elif filter_type == "sepia":
+        filters.append(
+            "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131"
+        )
+
+    if text:
+        safe_text = text.replace("'", "").replace(":", "")
+        filters.append(
+            f"drawtext=fontfile={FONT_PATH}:text='{safe_text}':"
+            f"fontcolor=white:fontsize=36:borderw=3:bordercolor=black:"
+            f"x=(w-text_w)/2:y=h-th-40"
+        )
+
+    vf = ",".join(filters) if filters else "null"
+
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-vf", vf,
+        "-c:a", "copy",
+        output_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    if result.returncode != 0 or not os.path.exists(output_path):
+        raise RuntimeError(result.stderr.decode(errors="ignore")[-500:])
+    return output_path
+
+
 # ================== AI (Groq) ==================
 
 async def ask_groq(user_text: str, lang: str) -> str:
@@ -471,15 +585,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(user.id)
 
     welcome_text = t(lang, "welcome", name=user.first_name)
+    if is_group_chat(update):
+        welcome_text += "\n\n" + t(lang, "group_hint")
     await update.message.reply_text(
-        welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=build_main_menu(lang)
+        welcome_text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_menu_markup(update, lang)
     )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = get_user_lang(update.effective_user.id)
     await update.message.reply_text(
-        t(lang, "help_text"), parse_mode=ParseMode.MARKDOWN, reply_markup=build_main_menu(lang)
+        t(lang, "help_text"), parse_mode=ParseMode.MARKDOWN, reply_markup=get_menu_markup(update, lang)
     )
 
 
@@ -581,42 +697,76 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user.id, user.username)
     lang = get_user_lang(user.id)
+    in_group = is_group_chat(update)
 
-    # --- AI rejimidan chiqish ---
-    if text == t(lang, "ai_exit"):
-        ai_mode_users.discard(user.id)
-        await update.message.reply_text(t(lang, "ai_off"), reply_markup=build_main_menu(lang))
-        return
-
-    # --- AI rejimini yoqish ---
-    if text == t(lang, "menu_ai"):
-        ai_mode_users.add(user.id)
-        await update.message.reply_text(t(lang, "ai_on"), reply_markup=build_ai_menu(lang))
+    # --- Tahrirlash uchun matn kutilayotgan bo'lsa ---
+    if user.id in awaiting_edit_text:
+        save_key = awaiting_edit_text.pop(user.id)
+        await process_edit(update.message, context, save_key, "text", text, lang)
         return
 
-    # --- AI rejimida bo'lsa ---
-    if user.id in ai_mode_users:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-        answer = await ask_groq(text, lang)
-        await update.message.reply_text(answer, reply_markup=build_ai_menu(lang))
+    # --- Rejalashtirilgan yuklash uchun havola kutilayotgan bo'lsa ---
+    if user.id in awaiting_schedule_link:
+        if not URL_PATTERN.search(text):
+            await update.message.reply_text(t(lang, "invalid_link"))
+            return
+        awaiting_schedule_link.discard(user.id)
+        pending_schedule_url[user.id] = text
+        keyboard = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton(t(lang, "schedule_10min"), callback_data="sched:10")],
+                [InlineKeyboardButton(t(lang, "schedule_30min"), callback_data="sched:30")],
+                [InlineKeyboardButton(t(lang, "schedule_1h"), callback_data="sched:60")],
+                [InlineKeyboardButton(t(lang, "schedule_3h"), callback_data="sched:180")],
+            ]
+        )
+        await update.message.reply_text(t(lang, "schedule_choose_delay"), reply_markup=keyboard)
         return
 
-    if text == t(lang, "menu_download"):
-        await update.message.reply_text(t(lang, "ask_link"))
-        return
-    if text == t(lang, "menu_saved"):
-        await show_saved_videos(update, context)
-        return
-    if text == t(lang, "menu_help"):
-        await help_command(update, context)
-        return
-    if text == t(lang, "menu_language"):
-        await language_command(update, context)
-        return
+    # --- Guruh chatida faqat menu tugmalarisiz, to'g'ridan-to'g'ri havolaga qaraymiz ---
+    if in_group:
+        if not URL_PATTERN.search(text):
+            return  # Guruhda bog'liq bo'lmagan xabarlarga javob bermaymiz (spam bo'lmasligi uchun)
+    else:
+        # --- AI rejimidan chiqish ---
+        if text == t(lang, "ai_exit"):
+            ai_mode_users.discard(user.id)
+            await update.message.reply_text(t(lang, "ai_off"), reply_markup=build_main_menu(lang))
+            return
 
-    if not URL_PATTERN.search(text):
-        await update.message.reply_text(t(lang, "invalid_link"))
-        return
+        # --- AI rejimini yoqish ---
+        if text == t(lang, "menu_ai"):
+            ai_mode_users.add(user.id)
+            await update.message.reply_text(t(lang, "ai_on"), reply_markup=build_ai_menu(lang))
+            return
+
+        # --- AI rejimida bo'lsa ---
+        if user.id in ai_mode_users:
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+            answer = await ask_groq(text, lang)
+            await update.message.reply_text(answer, reply_markup=build_ai_menu(lang))
+            return
+
+        if text == t(lang, "menu_download"):
+            await update.message.reply_text(t(lang, "ask_link"))
+            return
+        if text == t(lang, "menu_saved"):
+            await show_saved_videos(update, context)
+            return
+        if text == t(lang, "menu_help"):
+            await help_command(update, context)
+            return
+        if text == t(lang, "menu_language"):
+            await language_command(update, context)
+            return
+        if text == t(lang, "menu_schedule"):
+            awaiting_schedule_link.add(user.id)
+            await update.message.reply_text(t(lang, "schedule_ask_link"))
+            return
+
+        if not URL_PATTERN.search(text):
+            await update.message.reply_text(t(lang, "invalid_link"))
+            return
 
     # --- Cooldown ---
     now = time.time()
@@ -741,9 +891,11 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         save_key = save_counter["value"]
         pending_saves[save_key] = {"file_id": real_file_id, "title": title, "media_type": media_type}
 
-        new_keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("💾", callback_data=f"save:{save_key}")]]
-        )
+        buttons_row = [InlineKeyboardButton("💾", callback_data=f"save:{save_key}")]
+        if media_type == "video":
+            buttons_row.append(InlineKeyboardButton(t(lang, "edit_button"), callback_data=f"edit:{save_key}"))
+
+        new_keyboard = InlineKeyboardMarkup([buttons_row])
         await sent_message.edit_reply_markup(reply_markup=new_keyboard)
 
         os.remove(filename)
@@ -779,7 +931,10 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
                     save_key = save_counter["value"]
                     pending_saves[save_key] = {"file_id": real_file_id, "title": title, "media_type": "photo"}
                     new_keyboard = InlineKeyboardMarkup(
-                        [[InlineKeyboardButton("💾", callback_data=f"save:{save_key}")]]
+                        [[
+                            InlineKeyboardButton("💾", callback_data=f"save:{save_key}"),
+                            InlineKeyboardButton(t(lang, "edit_button"), callback_data=f"edit:{save_key}"),
+                        ]]
                     )
                     await sent_message.edit_reply_markup(reply_markup=new_keyboard)
 
@@ -797,6 +952,60 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
 
 
 # ================== INLINE TUGMALAR ==================
+
+async def process_edit(message, context: ContextTypes.DEFAULT_TYPE, save_key: int, filter_type: str, text_value: str, lang: str):
+    info = pending_saves.get(save_key)
+    if not info:
+        await message.reply_text(t(lang, "save_expired"))
+        return
+
+    file_id = info["file_id"]
+    media_type = info["media_type"]
+
+    status = await message.reply_text(t(lang, "edit_processing"))
+
+    local_input = None
+    output_path = None
+    try:
+        tg_file = await context.bot.get_file(file_id)
+        ext = ".mp4" if media_type == "video" else ".jpg"
+        local_input = os.path.join(DOWNLOAD_DIR, f"orig_{save_key}_{int(time.time())}{ext}")
+        await tg_file.download_to_drive(local_input)
+
+        applied_filter = filter_type if filter_type in ("bw", "sepia") else None
+        applied_text = text_value if filter_type == "text" else None
+
+        if media_type == "video":
+            output_path = apply_video_filter(local_input, applied_filter, applied_text)
+            with open(output_path, "rb") as f:
+                await message.reply_video(video=f, caption=t(lang, "edit_done_caption"))
+        else:
+            output_path = apply_photo_filter(local_input, applied_filter, applied_text)
+            with open(output_path, "rb") as f:
+                await message.reply_photo(photo=f, caption=t(lang, "edit_done_caption"))
+
+        await status.delete()
+    except Exception as e:
+        print(f"[TAHRIRLASH XATOLIK] {e}")
+        await status.edit_text(t(lang, "edit_error"))
+    finally:
+        if local_input and os.path.exists(local_input):
+            os.remove(local_input)
+        if output_path and os.path.exists(output_path):
+            os.remove(output_path)
+
+
+async def scheduled_download_job(context: ContextTypes.DEFAULT_TYPE):
+    job_data = context.job.data
+    chat_id = job_data["chat_id"]
+    url = job_data["url"]
+    user_id = job_data["user_id"]
+    lang = job_data["lang"]
+    quality = job_data.get("quality", "best")
+
+    trigger_msg = await context.bot.send_message(chat_id=chat_id, text=t(lang, "schedule_starting"))
+    await do_download(trigger_msg, context, url, quality, user_id, lang)
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -841,6 +1050,65 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_rating(score)
         await query.answer(t(lang, "rate_thanks"), show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    if data.startswith("sched:"):
+        minutes = int(data.split(":", 1)[1])
+        url = pending_schedule_url.pop(user_id, None)
+        await query.answer()
+
+        if not url:
+            await query.edit_message_text(t(lang, "no_url_found"))
+            return
+
+        run_time_str = time.strftime("%H:%M", time.localtime(time.time() + minutes * 60))
+        await query.edit_message_text(t(lang, "schedule_confirmed", time=run_time_str))
+
+        context.job_queue.run_once(
+            scheduled_download_job,
+            when=minutes * 60,
+            data={
+                "chat_id": query.message.chat_id,
+                "url": url,
+                "user_id": user_id,
+                "lang": lang,
+                "quality": "best",
+            },
+        )
+        return
+
+    if data.startswith("edit:"):
+        save_key = data.split(":", 1)[1]
+        await query.answer()
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(t(lang, "edit_bw"), callback_data=f"editbw:{save_key}"),
+                    InlineKeyboardButton(t(lang, "edit_sepia"), callback_data=f"editsepia:{save_key}"),
+                ],
+                [InlineKeyboardButton(t(lang, "edit_text"), callback_data=f"edittext:{save_key}")],
+                [InlineKeyboardButton(t(lang, "edit_cancel"), callback_data=f"editcancel:{save_key}")],
+            ]
+        )
+        await query.message.reply_text(t(lang, "edit_choose"), reply_markup=kb)
+        return
+
+    if data.startswith("editbw:") or data.startswith("editsepia:"):
+        filter_type = "bw" if data.startswith("editbw:") else "sepia"
+        save_key = int(data.split(":", 1)[1])
+        await query.answer()
+        await process_edit(query.message, context, save_key, filter_type, None, lang)
+        return
+
+    if data.startswith("edittext:"):
+        save_key = int(data.split(":", 1)[1])
+        awaiting_edit_text[user_id] = save_key
+        await query.answer()
+        await query.message.reply_text(t(lang, "edit_ask_text"))
+        return
+
+    if data.startswith("editcancel:"):
+        await query.answer(t(lang, "edit_cancelled"))
         return
 
     if data.startswith("save:"):
