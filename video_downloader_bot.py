@@ -844,8 +844,9 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
     if COOKIES_PATH:
         ydl_opts["cookiefile"] = COOKIES_PATH
 
-    if "youtube.com" in url or "youtu.be" in url:
-        ydl_opts["extractor_args"] = {"youtube": {"player_client": ["android", "web"]}}
+    # Eslatma: "android" klientini majburlash avval YouTube bot-tekshiruvini chetlab
+    # o'tishga yordam bergan, lekin hozir YouTube bu klientga faqat rasm (storyboard)
+    # formatlarini qaytarmoqda. Cookies fayl mavjud bo'lgani uchun bu hiylaga endi ehtiyoj yo'q.
 
     if media_type == "audio":
         ydl_opts["format"] = "bestaudio/best"
