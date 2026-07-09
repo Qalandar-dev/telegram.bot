@@ -841,15 +841,14 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         },
     }
 
-    # Cookie faylni faqat Instagram uchun ishlatamiz. YouTube uchun login qilingan
-    # (cookie) sessiya ko'pincha ko'proq cheklov qo'yishi mumkin (masalan hisobingiz
-    # tasdiqlanmagan bo'lsa), shuning uchun YouTube'da anonim (cookiesiz) so'rov afzal.
-    if COOKIES_PATH and "instagram.com" in url:
+    # Cookie faylni ishlatamiz (Instagram uchun kerak). YouTube uchun ham cookie bilan
+    # birga "tv" klientini simulyatsiya qilamiz — bu hozircha "faqat rasm" muammosiga
+    # kamroq duch keladigan variant hisoblanadi.
+    if COOKIES_PATH:
         ydl_opts["cookiefile"] = COOKIES_PATH
 
-    # Eslatma: "android" klientini majburlash avval YouTube bot-tekshiruvini chetlab
-    # o'tishga yordam bergan, lekin hozir YouTube bu klientga faqat rasm (storyboard)
-    # formatlarini qaytarmoqda. Cookies fayl mavjud bo'lgani uchun bu hiylaga endi ehtiyoj yo'q.
+    if "youtube.com" in url or "youtu.be" in url:
+        ydl_opts["extractor_args"] = {"youtube": {"player_client": ["tv"]}}
 
     if media_type == "audio":
         ydl_opts["format"] = "bestaudio/best"
