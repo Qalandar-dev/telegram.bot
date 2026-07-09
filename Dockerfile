@@ -7,9 +7,9 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# yt-dlp'ni har deployda majburan eng so'nggi versiyaga yangilaymiz
+# yt-dlp'ni har deployda majburan eng so'nggi (pre-release) versiyaga yangilaymiz
 # (YouTube tez-tez o'z tizimini o'zgartirib turadi, eski versiya ishlamay qolishi mumkin)
-RUN pip install --no-cache-dir --upgrade yt-dlp
+RUN pip install --no-cache-dir --upgrade --pre yt-dlp
 
 COPY . .
 
