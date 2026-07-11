@@ -40,6 +40,7 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 SAVED_FILE = "saved_videos.json"
 USERS_FILE = "users.json"
 RATINGS_FILE = "ratings.json"
+ADS_FILE = "ads.json"
 
 COOLDOWN_SECONDS = 8
 
@@ -87,6 +88,20 @@ awaiting_edit_text = {}
 awaiting_schedule_link = set()
 pending_schedule_url = {}
 
+# O'yin: viktorina holati (foydalanuvchi hozir nechinchi savolda ekanini saqlaydi)
+quiz_state = {}
+
+QUIZ_QUESTIONS = [
+    {"q": "Yer sayyorasining tabiiy yo'ldoshi nima deb ataladi?", "options": ["Quyosh", "Oy", "Mars", "Yulduz"], "correct": 1},
+    {"q": "O'zbekistonning poytaxti qaysi shahar?", "options": ["Samarqand", "Buxoro", "Toshkent", "Andijon"], "correct": 2},
+    {"q": "Suvning kimyoviy formulasi qanday?", "options": ["CO2", "H2O", "O2", "NaCl"], "correct": 1},
+    {"q": "Dunyodagi eng baland tog' cho'qqisi qaysi?", "options": ["Elbrus", "Everest", "Kilimanjaro", "Mont Blan"], "correct": 1},
+    {"q": "Bir yilda nechta oy bor?", "options": ["10", "11", "12", "13"], "correct": 2},
+    {"q": "Inson tanasida nechta suyak bor (taxminan)?", "options": ["106", "206", "306", "406"], "correct": 1},
+    {"q": "Eng katta okean qaysi?", "options": ["Atlantika", "Hind", "Tinch okeani", "Shimoliy Muz okeani"], "correct": 2},
+    {"q": "Fotosintez jarayonida o'simliklar nimani ishlab chiqaradi?", "options": ["Kislorod", "Azot", "Vodorod", "Metan"], "correct": 0},
+]
+
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
@@ -129,6 +144,7 @@ TEXTS = {
         "menu_ai": "🤖 AI bilan suhbat",
         "menu_help": "🆘 Yordam",
         "menu_language": "🌐 Til",
+        "menu_games": "🎮 O'yinlar",
         "ai_exit": "⬅️ AI rejimidan chiqish",
         "choose_language": "Tilni tanlang / Выберите язык / Choose language:",
         "language_set": "✅ Til o'zbek tiliga o'zgartirildi.",
@@ -197,6 +213,25 @@ TEXTS = {
         "edit_cancelled": "Bekor qilindi.",
         # --- Guruh chat ---
         "group_hint": "🔗 Havolani guruhga yuboring, men avtomatik topib yuklab beraman.",
+        # --- O'yinlar ---
+        "games_menu_title": "🎮 Qaysi o'yinni o'ynaymiz?",
+        "game_dice": "🎲 Zar",
+        "game_dart": "🎯 Nishonga urish",
+        "game_basketball": "🏀 Basketbol",
+        "game_bowling": "🎳 Boulling",
+        "game_football": "⚽ Futbol",
+        "game_slot": "🎰 Slot mashina",
+        "game_quiz": "🧠 Viktorina",
+        "game_leaderboard": "🏆 Reyting",
+        "game_back": "⬅️ Orqaga",
+        "game_jackpot": "🎉 JACKPOT! Zo'r natija!",
+        "game_nice": "👍 Yaxshi natija!",
+        "quiz_correct": "✅ To'g'ri! Ballaringiz: {score}",
+        "quiz_wrong": "❌ Noto'g'ri. To'g'ri javob: {answer}",
+        "quiz_no_more": "🎉 Barcha savollar tugadi! Umumiy ballaringiz: {score}",
+        "leaderboard_title": "🏆 *Eng yaxshi o'yinchilar*",
+        "leaderboard_empty": "Hali hech kim o'ynamagan.",
+        "leaderboard_row": "{rank}. {name} — {score} ball",
     },
     "ru": {
         "welcome": (
@@ -337,8 +372,9 @@ def build_main_menu(lang: str) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [t(lang, "menu_download"), t(lang, "menu_saved")],
-            [t(lang, "menu_ai"), t(lang, "menu_help")],
-            [t(lang, "menu_schedule"), t(lang, "menu_language")],
+            [t(lang, "menu_ai"), t(lang, "menu_games")],
+            [t(lang, "menu_schedule"), t(lang, "menu_help")],
+            [t(lang, "menu_language")],
         ],
         resize_keyboard=True,
     )
@@ -406,6 +442,26 @@ def increment_download_count(user_id: int):
         save_json(USERS_FILE, users)
 
 
+def add_game_score(user_id: int, points: int = 1):
+    users = load_json(USERS_FILE)
+    key = str(user_id)
+    if key not in users:
+        users[key] = {"username": "noma'lum", "downloads": 0, "lang": DEFAULT_LANG}
+    users[key]["game_score"] = users[key].get("game_score", 0) + points
+    save_json(USERS_FILE, users)
+    return users[key]["game_score"]
+
+
+def get_leaderboard(limit: int = 10) -> list:
+    users = load_json(USERS_FILE)
+    ranked = sorted(
+        ((u.get("username", "noma'lum"), u.get("game_score", 0)) for u in users.values() if u.get("game_score", 0) > 0),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
 def add_saved_video(user_id: int, file_id: str, title: str, media_type: str):
     data = load_json(SAVED_FILE)
     key = str(user_id)
@@ -435,6 +491,55 @@ def get_average_rating():
     if count == 0:
         return None, 0
     return data.get("sum", 0) / count, count
+
+
+# ================== REKLAMA TIZIMI ==================
+
+DEFAULT_AD_CONFIG = {
+    "enabled": False,
+    "frequency": 3,       # har N-chi yuklamadan keyin ko'rsatiladi
+    "text": "",
+    "button_text": "",
+    "button_url": "",
+}
+
+
+def get_ad_config() -> dict:
+    data = load_json(ADS_FILE)
+    if not data:
+        return DEFAULT_AD_CONFIG.copy()
+    merged = DEFAULT_AD_CONFIG.copy()
+    merged.update(data)
+    return merged
+
+
+def set_ad_config(config: dict):
+    save_json(ADS_FILE, config)
+
+
+async def maybe_show_ad(update_message, user_id: int):
+    """Yuklamadan so'ng, sozlangan chastotaga mos kelsa reklama xabarini ko'rsatadi."""
+    config = get_ad_config()
+    if not config.get("enabled") or not config.get("text"):
+        return
+
+    frequency = max(1, config.get("frequency", 3))
+    users = load_json(USERS_FILE)
+    downloads = users.get(str(user_id), {}).get("downloads", 0)
+
+    if downloads % frequency != 0:
+        return
+
+    keyboard = None
+    if config.get("button_text") and config.get("button_url"):
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(config["button_text"], url=config["button_url"])]]
+        )
+
+    try:
+        await update_message.reply_text(f"📢 {config['text']}", reply_markup=keyboard)
+    except Exception as e:
+        print(f"[REKLAMA XATOLIK] {e}")
 
 
 # ================== COOKIE PARSING ==================
@@ -671,6 +776,146 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Yuborildi: {sent} ta\n❌ Xato: {failed} ta")
 
 
+async def setad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Bu buyruq faqat adminlar uchun.")
+        return
+
+    raw = " ".join(context.args)
+    if not raw or "|" not in raw:
+        await update.message.reply_text(
+            "Foydalanish:\n"
+            "/setad chastota|matn|tugma_matni|tugma_havolasi\n\n"
+            "Misol:\n"
+            "/setad 3|🎉 Bizning kanalga obuna bo'ling!|Obuna bo'lish|https://t.me/kanalingiz\n\n"
+            "Eslatma: tugma ixtiyoriy — agar kerak bo'lmasa, oxirgi ikkitasini bo'sh qoldiring:\n"
+            "/setad 3|Oddiy reklama matni||"
+        )
+        return
+
+    parts = [p.strip() for p in raw.split("|")]
+    if len(parts) < 2:
+        await update.message.reply_text("❌ Format noto'g'ri. Kamida chastota va matn kerak.")
+        return
+
+    try:
+        frequency = max(1, int(parts[0]))
+    except ValueError:
+        await update.message.reply_text("❌ Birinchi qism (chastota) raqam bo'lishi kerak.")
+        return
+
+    text = parts[1]
+    button_text = parts[2] if len(parts) > 2 else ""
+    button_url = parts[3] if len(parts) > 3 else ""
+
+    config = {
+        "enabled": True,
+        "frequency": frequency,
+        "text": text,
+        "button_text": button_text,
+        "button_url": button_url,
+    }
+    set_ad_config(config)
+
+    button_display = button_text if button_text else "(yo'q)"
+    await update.message.reply_text(
+        f"✅ Reklama sozlandi va yoqildi!\n\n"
+        f"📊 Chastota: har {frequency}-yuklamadan keyin\n"
+        f"📝 Matn: {text}\n"
+        f"🔗 Tugma: {button_display}"
+    )
+
+
+async def adtoggle_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Bu buyruq faqat adminlar uchun.")
+        return
+
+    config = get_ad_config()
+    config["enabled"] = not config.get("enabled", False)
+    set_ad_config(config)
+
+    status = "yoqildi ✅" if config["enabled"] else "o'chirildi ❌"
+    await update.message.reply_text(f"Reklama {status}")
+
+
+async def adstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Bu buyruq faqat adminlar uchun.")
+        return
+
+    config = get_ad_config()
+    status = "✅ Yoqilgan" if config.get("enabled") else "❌ O'chirilgan"
+    button_display = config.get("button_text") or "(yo'q)"
+    url_display = config.get("button_url") or "(yo'q)"
+    text = f"""
+📢 *Reklama holati*
+
+Holat: {status}
+Chastota: har {config.get('frequency', 3)}-yuklamadan keyin
+Matn: {config.get('text') or '(sozlanmagan)'}
+Tugma: {button_display}
+Havola: {url_display}
+"""
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
+
+def build_games_menu(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(t(lang, "game_dice"), callback_data="game:dice"),
+                InlineKeyboardButton(t(lang, "game_dart"), callback_data="game:dart"),
+            ],
+            [
+                InlineKeyboardButton(t(lang, "game_basketball"), callback_data="game:basketball"),
+                InlineKeyboardButton(t(lang, "game_bowling"), callback_data="game:bowling"),
+            ],
+            [
+                InlineKeyboardButton(t(lang, "game_football"), callback_data="game:football"),
+                InlineKeyboardButton(t(lang, "game_slot"), callback_data="game:slot"),
+            ],
+            [InlineKeyboardButton(t(lang, "game_quiz"), callback_data="game:quiz")],
+            [InlineKeyboardButton(t(lang, "game_leaderboard"), callback_data="game:leaderboard")],
+        ]
+    )
+
+
+async def send_quiz_question(message, user_id: int, lang: str):
+    index = quiz_state.get(user_id, 0)
+
+    if index >= len(QUIZ_QUESTIONS):
+        quiz_state.pop(user_id, None)
+        users = load_json(USERS_FILE)
+        score = users.get(str(user_id), {}).get("game_score", 0)
+        await message.reply_text(t(lang, "quiz_no_more", score=score))
+        return
+
+    question = QUIZ_QUESTIONS[index]
+    keyboard = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(opt, callback_data=f"quizans:{index}:{i}")]
+            for i, opt in enumerate(question["options"])
+        ]
+    )
+    await message.reply_text(f"❓ {question['q']}", reply_markup=keyboard)
+
+
+async def show_leaderboard(message, lang: str):
+    top = get_leaderboard(10)
+    if not top:
+        await message.reply_text(t(lang, "leaderboard_empty"))
+        return
+
+    rows = [
+        t(lang, "leaderboard_row", rank=i + 1, name=name, score=score)
+        for i, (name, score) in enumerate(top)
+    ]
+    text = t(lang, "leaderboard_title") + "\n\n" + "\n".join(rows)
+    await message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+
+
 async def show_saved_videos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = get_user_lang(user_id)
@@ -767,6 +1012,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == t(lang, "menu_schedule"):
             awaiting_schedule_link.add(user.id)
             await update.message.reply_text(t(lang, "schedule_ask_link"))
+            return
+        if text == t(lang, "menu_games"):
+            await update.message.reply_text(t(lang, "games_menu_title"), reply_markup=build_games_menu(lang))
             return
 
         if not URL_PATTERN.search(text):
@@ -916,6 +1164,9 @@ async def do_download(update_message, context: ContextTypes.DEFAULT_TYPE, url: s
         )
         await update_message.reply_text(t(lang, "rate_prompt"), reply_markup=rating_keyboard)
 
+        # --- Reklama (agar sozlangan va chastotaga mos bo'lsa) ---
+        await maybe_show_ad(update_message, user_id)
+
     except yt_dlp.utils.DownloadError as e:
         print(f"[YT-DLP XATOLIK] URL: {url}\nSabab: {e}")
 
@@ -1058,6 +1309,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_rating(score)
         await query.answer(t(lang, "rate_thanks"), show_alert=True)
         await query.edit_message_reply_markup(reply_markup=None)
+        return
+
+    if data.startswith("game:"):
+        kind = data.split(":", 1)[1]
+        dice_emojis = {
+            "dice": "🎲",
+            "dart": "🎯",
+            "basketball": "🏀",
+            "bowling": "🎳",
+            "football": "⚽",
+            "slot": "🎰",
+        }
+
+        if kind in dice_emojis:
+            await query.answer()
+            dice_msg = await context.bot.send_dice(chat_id=query.message.chat_id, emoji=dice_emojis[kind])
+            value = dice_msg.dice.value
+
+            is_jackpot = kind == "slot" and value == 64
+            is_great = kind in ("dice", "dart", "bowling") and value == 6
+            is_great = is_great or (kind in ("basketball", "football") and value >= 4)
+
+            if is_jackpot:
+                add_game_score(user_id, 5)
+                await dice_msg.reply_text(t(lang, "game_jackpot"))
+            elif is_great:
+                add_game_score(user_id, 1)
+                await dice_msg.reply_text(t(lang, "game_nice"))
+            return
+
+        if kind == "quiz":
+            await query.answer()
+            quiz_state[user_id] = 0
+            await send_quiz_question(query.message, user_id, lang)
+            return
+
+        if kind == "leaderboard":
+            await query.answer()
+            await show_leaderboard(query.message, lang)
+            return
+
+        await query.answer()
+        return
+
+    if data.startswith("quizans:"):
+        _, q_index_str, chosen_str = data.split(":")
+        q_index = int(q_index_str)
+        chosen = int(chosen_str)
+        question = QUIZ_QUESTIONS[q_index]
+
+        await query.answer()
+
+        if chosen == question["correct"]:
+            new_score = add_game_score(user_id, 2)
+            await query.edit_message_text(f"❓ {question['q']}\n\n" + t(lang, "quiz_correct", score=new_score))
+        else:
+            correct_answer = question["options"][question["correct"]]
+            await query.edit_message_text(f"❓ {question['q']}\n\n" + t(lang, "quiz_wrong", answer=correct_answer))
+
+        quiz_state[user_id] = q_index + 1
+        await send_quiz_question(query.message, user_id, lang)
         return
 
     if data.startswith("sched:"):
@@ -1239,6 +1551,9 @@ def main():
     app.add_handler(CommandHandler("language", language_command))
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("setad", setad_command))
+    app.add_handler(CommandHandler("adtoggle", adtoggle_command))
+    app.add_handler(CommandHandler("adstatus", adstatus_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(InlineQueryHandler(inline_query_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
